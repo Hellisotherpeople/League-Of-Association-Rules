@@ -1,0 +1,169 @@
+---
+title: "Building League of Legends Team Compositions with Association Rule Mining"
+output: html_notebook
+---
+***Author = Allen Roush***  
+***Date = 8/27/17***
+
+*The reader is assumed to understand the basics of League of Legends.*
+
+*Version 1.0*
+
+###Step 0. Motivation
+
+
+Awhile ago, I learned about the data-mining technique known as "Association Rule Mining" in an undergraduate data-science class at the University of Oregon. I instantly recognized the versitility of this technique. Before long, I hatched a plan to use this technique to help a team of League of Legends players decide how to build team compositions. 
+
+The idea is to farm a large amount of game data from the RiotAPI. The RiotAPI is an API maintained by League of Legend's developers (Riot Games) that allows any developer to extract publicaly avalible Leaue of Legends data. 
+
+I wrote a crawler in Python to recursively search through the top master ranked players and farm their match histories. The data I farmed consists of the champions picked within the game and which side won.
+
+Association Rule Mining will find common sets of champions that show up in many games together. 
+
+This can be very powerful. Imagine that I'm in champion select, like so:
+![](/home/lain/Desktop/CIS453FinalProject/championselect.jpg)
+My team has already picked 2 champions, and the other team has picked 3 champions. Now I want to know what ADC champions are strongest given the knowledge of those champions on my team and the opposing team. 
+
+If I have a large dataset **(at least 1 million games)** than there's bound to be a large number of games played where **blue-side** has Ahri, Jarven, Sejuani, and Taric and  **red-side** has Dr.Mundo, Brand and Miss Fortune. I want to look through that subset of games and find which ADC's picked in that subset maximize **blue-side's** winrate. 
+
+I have a much smaller dataset, but even with only 7000 games, I can demonstrate the capabilities of this technique. 
+
+###Step 1. Preprocess the Data
+
+First let's initialize the libraries we're going to use. "arules" makes the Apriori Association Rule Mining algorithim avalible, and "arulesViz" is a special set of tools designed to make vizualizing Association Rules easy. 
+```{r}
+library(arules)
+library(arulesViz)
+```
+Next, we need to read in the data.
+```{r}
+cdata <- read.transactions(file="/home/lain/Desktop/CIS453FinalProject/Leaguearules.csv", sep=",")
+```
+This reads in a datafile of about 7000 games that I've farmed for this experiment. 
+
+Now, let's print a summary of the data.
+```{r}
+summary(cdata)
+```
+
+*Of note, is that every single document should be of size 11. Unfortunately, some are of smaller sizes. The smaller sized documents are malformed output, caused by the RiotAPI sometimes not listing all of the champions played in a game. I haven't figured out a good way to remove the items of legnth < 11. Luckily, those items will not have a dramatic impact on the data quality. *
+
+Let's take a look at 2 transactions to see the schema of the data. 
+
+```{r}
+inspect(subset(cdata[1:2]))
+```
+It lists "B" **blue side** followed by the names of 5 champions, similarly "R"" for **red side**, and finally "RFalse" meaning that **red side** lost and that **blue side** won. 
+
+###Step 2. Generate Association Rules
+Let's generate some Association Rules with this data!  
+
+```{r}
+rules <- apriori(cdata, parameter=list(support=0.003, confidence = 0.2, maxlen = 20), appearance = list(rhs=c("RTrue", "RFalse"), default="lhs"))
+
+```
+There are several things to note here:
+
+* The "Absolute minimum support count" tells me that the minimum number of games that a subset had to appear in was 21.
+* we have generated 1998 rules. Far too many to inspect them all naievly. 
+* I specified that all rules had to put red side winning or losing on the right hand side in the apriori algorithim options. 
+
+```{r}
+summary(rules)
+```
+We get statistical breakdowns of the 3 main measures used to rate association rules. 
+
+* The **support** is a measure of how often the left-hand sided data is found together within the data 
+* We calculate the absolute support of a rule by multiplaying its support by the total number of transactions (7141)
+* As the number of games required to find a pattern goes up, the number of rules generated rapidly dwindles. This explains why our median and mean are so close to the minimum support. 
+
+* The **confidence** is the accuracy percentage of the rule. For our application, this can be interpreted as the win-rate. 
+* Because the rules right-hand side can be either saying **{RFalse}** or **{RTrue}**, this measure has to be interpreted contextually based on the value of the right-hand side  
+
+* The **lift** is a mathamatical measure of "interestingness" of a rule. Higher lifts indicate that a rule is outperforming the "expected" accuracy (in this case, win-rate). Our lifts tend to be quite low. We would expect much higher lifts as the number of transactions grows. 
+
+Now, let's look at some of the specific rules. We will list the 30 rules with the lowest support (21). Given that the bulk of my data has very low support, this serves to give us a nice "snapshot" of the data. 
+
+```{r}
+inspect(subset(sort(rules, by = "support", decreasing = FALSE))[1:30])
+
+```
+
+And here we have results! The small size of my data limits the size of each rule,  but rules even in this form can be extremely helpful. 
+
+For example, Rule 7 says "We found Caitlyn and Shaco to be played together on red-side in 21 games. When those two are played together, red-side wins 64% of the time". 64% is a very good win-rate! This implies that Caitlyn and Shaco are strong when played together. 
+
+Speaking of Caitlyn, I want to know how she performs on redside! Let's list the 10 most "interesting" rules with Red-side Caitlyn. 
+
+```{r}
+inspect(sort(subset(rules, subset=lhs %ain% 'RCaitlyn')[1:10], by = 'lift'))
+```
+Rules 1-5 tell us that Caitlyn is weak with Elise, strong with Shaco or Swaim, and strong with **or** against a Cho'Gath. 
+This is potentially useful information! 
+
+Now, imagine that I'm in champion select on red-side and I'm second pick. My team has first picked a Lucian and the opposing teamm second picks Lee Sin. I want to find a champion that can maximize my win-rate given this information. Here, we see the power of the association rules. 
+
+Unfortunately, my minimum support of 21 is too high for us to have rules of size necessary for this application. Let's rerun the apriori algorithim with a lower minimum support first. 
+
+```{r}
+rules2 <- apriori(cdata, parameter=list(support=0.001, confidence = 0.2, maxlen = 20), appearance = list(rhs=c("RTrue", "RFalse"), default="lhs"))
+```
+A minimum support of 7 now. That's not a whole lot of games, but it's necessary to illistrate the possible power of this method.
+
+Notice that the number of rules generated massively increased to 25440.
+Since the minimum support is so much lower, rules will more champions in them. 
+
+Now let's list rules with the highest win-rate (confidence), because I *am* trying to improve my chances of winning. 
+
+```{r}
+inspect(sort(subset(rules2, subset=lhs %ain% c('RLucian', 'BLee Sin'))[1:10], by = 'confidence'))
+```
+
+Rule number 5 sticks out to me. It tells me that when Nami is picked with Lucian against Lee'Sin, Red-side has a 78% winrate! These results are very promising. According to this data, I should consider picking Nami. I can build team compositions using this tool! 
+
+Hopefully, Riot will soon give me faster access to it's API, and then I can test this method on a data-set of multiple millions. In the mean time, I plan on trying to create a web-interface to give an end-sure access to this data. 
+
+Let's use some of the vizualization tools in the ArulesViz library to get a better look at the data, since we cannot hope to possible inspect all 25440 rules. 
+
+###Step 3. Vizualize Association Rules
+
+My favorite plotting method is the scatter plot. We can change any axis to whatever measure we want.
+```{r}
+plot(rules2, method="Scatter", measure = c("support", "lift"), shading = "confidence")
+```
+
+ The rules with the highest supports tend to have lower lifts and confidences. This stays true even for the rules with extremely high support (the two dots on the far right). This makes sense, because confidence should not be anywhere near 0.75-1.00 given a large enough sample size. 
+ 
+The confidence and lift are highly correlated for this dataset. Swapping the confidence and lift produces a near copy of the previous graph. 
+
+```{r}
+plot(rules2, method="Scatter", measure = c("support", "confidence"), shading = "lift")
+```
+
+
+Let's try another Vizualization technique: the Matrix. We switch back to the larger ruleset. 
+```{r}
+plot(rules2[1:500], method="matrix3D", measure="confidence")
+```
+
+We're plotting the first 500 rules for brevity.
+
+There are two distinct groups, one with **"Consequent"** = 1.0 and another with it equal to 2.0. These correspond to **"RFalse"** and **"RTrue"**
+
+The **Antecedent** corresponds to the physical rule number within the set of rules. There doesn't appear to be any strong pattern to the confidence rates vs the position in the set of rules. 
+
+We can create a "Grouped Matrix", which is good for looking at smaller sets of rules.
+```{r}
+plot(rules2[1:50], method="grouped", measure="support", shading="confidence")
+```
+
+Rules with Rengar and Aatrox within them seem to have very high support. Since the color corresponds to the win-rate, it makes sense for a rule to have alternating RHS colors: If your Red-side winning rate is high, it's losing rate should be low (and the high + low should = 1.00)
+
+###Step 4. Closing Thoughts:
+
+I hope that this experiment has been as interesting to you as it was for me. 
+
+I could not have done this without the help of the "Cassiopeia" wrapper for the RiotAPI, as well as the "arules" and "arulesViz" libraries. The authors of those libraries made this work possible!
+
+If you have questions, don't hesitate to contact me. 
+[here](https://www.linkedin.com/in/allen-roush-27721011b/)
